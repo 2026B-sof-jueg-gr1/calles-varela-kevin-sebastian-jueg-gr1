@@ -10,6 +10,10 @@ import { PlayerController } from '../player/PlayerController';
 import { HUD } from '../ui/HUD';
 import { ElementSystem, ProjectileData } from '../elements/ElementSystem';
 import { ElementSelector } from '../ui/ElementSelector';
+import { EnemyManager } from '../enemies/EnemyManager';
+import { Enemy } from '../enemies/Enemy';
+import { spawnDamageText, spawnHitSparks } from '../combat/CombatFX';
+import { GAME_CONFIG } from '../config/GameConfig';
 
 export class GameScene extends Phaser.Scene {
 
@@ -19,6 +23,8 @@ export class GameScene extends Phaser.Scene {
     private elements!: ElementSystem;
     private selector!: ElementSelector;
     private hud!: HUD;
+    private enemyMgr!: EnemyManager;
+    private enemyCountText!: Phaser.GameObjects.Text;
 
     // ── Física ────────────────────────────────────────────────
     private platforms!: Phaser.Physics.Arcade.StaticGroup;
@@ -48,11 +54,16 @@ export class GameScene extends Phaser.Scene {
         this.cameras.main.setBounds(0, 0, this.WORLD_W, this.WORLD_H);
         this.physics.world.gravity.y = 0;
 
+        // Reinicio limpio (la instancia de la escena se reutiliza al reiniciar)
+        this.isPaused = false;
+        this.events.once('shutdown', () => this.shutdown());
+
         this.buildBackground();
         this.buildLevel();
         this.buildElementSystem();   // antes de buildPlayer para que controller tenga ref
         this.buildPlayer();
         this.buildHazards();
+        this.buildEnemies();
         this.buildCamera();
         this.buildCollisions();
         this.buildEventListeners();
@@ -218,6 +229,7 @@ export class GameScene extends Phaser.Scene {
         body.setAllowGravity(true);
 
 
+        rock.setData('proj', data);
         this.earthProjectiles.add(rock);
 
         // Destruir si supera el rango máximo
@@ -280,15 +292,66 @@ export class GameScene extends Phaser.Scene {
     // ── Explosión de fuego ────────────────────────────────────
 
     private applyFireExplosion(cx: number, cy: number): void {
-        // La explosión ya fue visualizada en ElementSystem.
-        // Aquí aplicaríamos daño a los enemigos en rango (Fase 3).
-        // Por ahora registramos la posición para debug.
-        void [cx, cy];
+        // La explosión visual ya la genera ElementSystem.
+        // Aquí se aplica el daño de área: solo los enemigos dentro del radio
+        // reciben daño, empuje, interrupción y quemadura.
+        const F = GAME_CONFIG.ELEMENTS.FIRE;
+        const n = this.enemyMgr.explode(cx, cy, F.RADIUS, {
+            damage: F.DAMAGE,
+            knockbackX: 240,
+            knockbackY: -180,
+            interrupt: true,
+            ignite: true,
+            source: 'fire',
+        });
+        if (n > 0) this.cameras.main.shake(120, 0.006);
     }
 
     // ──────────────────────────────────────────────────────────
     //  JUGADOR
     // ──────────────────────────────────────────────────────────
+
+    // ──────────────────────────────────────────────────────────
+    //  ENEMIGOS Y DAÑO AL JUGADOR
+    // ──────────────────────────────────────────────────────────
+
+    private buildEnemies(): void {
+        this.enemyMgr = new EnemyManager(this, (enemy, dmg, kx, ky) =>
+            this.damagePlayer(enemy, dmg, kx, ky)
+        );
+
+        // Puntos de aparición (x) sobre el suelo principal (y = 700)
+        const spawnXs = [650, 980, 1350, 1650, 2050, 2450, 3000, 3100];
+        spawnXs.forEach(x => this.enemyMgr.spawn(x, 640));
+
+        this.enemyCountText = this.add.text(this.scale.width / 2, 14, '', {
+            fontSize: '14px', color: '#ff9955', fontFamily: 'monospace',
+            stroke: '#000000', strokeThickness: 3,
+        }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(100);
+    }
+
+    /**
+     * Punto único por el que el jugador recibe daño de enemigos.
+     * Orden: invulnerabilidad → escudo de agua → daño real.
+     */
+    private damagePlayer(_enemy: Enemy, damage: number, kx: number, ky: number): void {
+        const p = this.player;
+        if (p.isDead || p.isInvulnerable) return;
+
+        // El escudo de agua absorbe el golpe completo y se rompe
+        if (this.elements.tryAbsorbHit()) {
+            p.grantInvulnerability(500);
+            spawnDamageText(this, p.x, p.y - 40, 'BLOQUEADO', '#66ccff', 18);
+            spawnHitSparks(this, p.x, p.y, 0x66ccff, 12);
+            this.cameras.main.shake(70, 0.003);
+            return;
+        }
+
+        p.takeDamage(damage, kx, ky);
+        spawnDamageText(this, p.x, p.y - 40, `-${damage}`, '#ff4466', 24);
+        this.cameras.main.shake(150, 0.008);
+        this.cameras.main.flash(120, 140, 0, 0);
+    }
 
     private buildPlayer(): void {
         this.player = new Player(this, 120, 620);
@@ -351,6 +414,31 @@ export class GameScene extends Phaser.Scene {
             }
         );
 
+        // Enemigos ↔ escenario y entre sí
+        this.physics.add.collider(this.enemyMgr.group, this.platforms);
+        this.physics.add.collider(this.enemyMgr.group, this.enemyMgr.group);
+
+        // Roca de tierra ↔ enemigos: daño alto, empuje e interrupción
+        this.physics.add.overlap(
+            this.earthProjectiles,
+            this.enemyMgr.group,
+            (rockObj, enemyObj) => {
+                const rock = rockObj as unknown as Phaser.GameObjects.Rectangle;
+                const enemy = enemyObj as unknown as Enemy;
+                if (!rock.active || enemy.isDead) return;
+
+                const data = rock.getData('proj') as ProjectileData;
+                this.enemyMgr.hit(enemy, {
+                    damage: data.damage,
+                    knockbackX: data.knockbackX,   // ya trae el signo de la dirección
+                    knockbackY: data.knockbackY,
+                    interrupt: true,
+                    source: 'earth',
+                });
+                this.destroyRock(rock);
+            }
+        );
+
         // Abismos
         this.physics.add.overlap(this.player, this.hazards, () => {
             this.player.takeDamage(999);
@@ -372,6 +460,11 @@ export class GameScene extends Phaser.Scene {
     }
 
     private togglePause(): void {
+        // ESC con el selector abierto: solo lo cierra
+        if (!this.isPaused && this.selector?.isOpen) {
+            this.selector.close();
+            return;
+        }
         if (this.isPaused) {
             this.isPaused = false;
             this.pauseOverlay?.destroy();
@@ -436,6 +529,7 @@ export class GameScene extends Phaser.Scene {
         if (this.isPaused) return;
 
         this.controller.update(time, delta);
+        this.selector.update();
         this.player.update(time, delta);
 
         // Actualizar sistema elemental
@@ -446,6 +540,10 @@ export class GameScene extends Phaser.Scene {
         if (healAmount > 0) {
             this.player.heal(healAmount);
         }
+
+        // Combate: enemigos, zonas de ataque del jugador y daño recibido
+        this.enemyMgr.update(time, this.player, this.player.attackSystem.zones);
+        this.enemyCountText.setText(`Enemigos: ${this.enemyMgr.alive.length}`);
 
         this.hud.update();
 
@@ -463,6 +561,7 @@ export class GameScene extends Phaser.Scene {
         this.hud?.destroy();
         this.selector?.destroy();
         this.elements?.destroy();
+        this.enemyMgr?.destroy();
         this.events.off('player-dead');
     }
 }

@@ -2,6 +2,14 @@
 //  ElementSelector.ts  –  Selector rápido de elementos (tecla F)
 //  Muestra los 4 elementos y permite cambiar la combinación
 //  sin pausar el juego.
+//
+//  · Pestañas "SLOT 1 / SLOT 2" (clic, o teclas 1 / 2 / Q):
+//    eligen qué slot se va a modificar.
+//  · Clic en un elemento: se equipa en ese slot y el menú se cierra.
+//  · F (o ESC / clic fuera del panel): cierra el menú.
+//
+//  Todos los objetos creados se guardan en `items` y se destruyen
+//  uno a uno al cerrar, así nunca quedan capas oscuras huérfanas.
 // ============================================================
 
 import Phaser from 'phaser';
@@ -22,13 +30,17 @@ const ELEMENT_VISUALS: Record<ElementId, ElementVisual> = {
     none:  { id: 'none',  color: 0x333333, icon: '—',   label: '—'      },
 };
 
-export class ElementSelector {
-    private scene:    Phaser.Scene;
-    private system:   ElementSystem;
-    private visible   = false;
-    private container: Phaser.GameObjects.Container | null = null;
+const DEPTH = 300; // por encima del HUD (100) y de la pausa (200)
 
-    // Cuál slot está siendo modificado en el selector
+export class ElementSelector {
+    private scene:   Phaser.Scene;
+    private system:  ElementSystem;
+    private visible  = false;
+
+    /** Todos los objetos del menú actualmente en pantalla */
+    private items: Phaser.GameObjects.GameObject[] = [];
+
+    /** Slot que se está editando (sigue al slot activo del ElementSystem) */
     private editingSlot: 0 | 1 = 0;
 
     constructor(scene: Phaser.Scene, system: ElementSystem) {
@@ -39,149 +51,159 @@ export class ElementSelector {
     get isOpen(): boolean { return this.visible; }
 
     toggle(editSlot?: 0 | 1): void {
-        if (this.visible) {
-            this.close();
-        } else {
-            this.open(editSlot ?? this.system.activeIndex);
-        }
+        if (this.visible) this.close();
+        else this.open(editSlot ?? this.system.activeIndex);
     }
 
     open(editSlot: 0 | 1): void {
         if (this.visible) return;
-        this.visible   = true;
+        this.visible = true;
         this.editingSlot = editSlot;
-        this.build();
+        this.system.selectSlot(editSlot);
+        this.rebuild();
     }
 
     close(): void {
-        if (!this.visible) return;
         this.visible = false;
-        this.container?.destroy(true);
-        this.container = null;
+        this.clear();
     }
 
-    private build(): void {
-        const W   = this.scene.scale.width;
-        const H   = this.scene.scale.height;
-        const cx  = W / 2;
-        const cy  = H / 2;
+    /**
+     * Llamar cada frame desde la escena. Si el jugador cambia de slot con
+     * 1 / 2 / Q mientras el menú está abierto, el menú se actualiza.
+     */
+    update(): void {
+        if (!this.visible) return;
+        if (this.system.activeIndex !== this.editingSlot) {
+            this.editingSlot = this.system.activeIndex;
+            this.rebuild();
+        }
+    }
+
+    // ── Construcción ──────────────────────────────────────────
+
+    private clear(): void {
+        this.items.forEach(o => o.destroy());
+        this.items = [];
+    }
+
+    /** Destruye lo anterior y vuelve a dibujar (nunca se apilan capas) */
+    private rebuild(): void {
+        this.clear();
+        if (!this.visible) return;
+
+        const s  = this.scene;
+        const W  = s.scale.width;
+        const H  = s.scale.height;
+        const cx = W / 2;
+        const cy = H / 2;
 
         const elements = this.system.getAllElements();
         const cols = 2;
         const cardW = 140, cardH = 90, gap = 16;
-
+        const rows = Math.ceil(elements.length / cols);
         const totalW = cols * cardW + (cols - 1) * gap;
-        const totalH = Math.ceil(elements.length / cols) * cardH + Math.ceil(elements.length / cols - 1) * gap;
+        const totalH = rows * cardH + (rows - 1) * gap;
 
-        const items: Phaser.GameObjects.GameObject[] = [];
-
-        // Fondo semitransparente
-        const overlay = this.scene.add.rectangle(cx, cy, W, H, 0x000000, 0.55)
-            .setScrollFactor(0).setDepth(199);
-        items.push(overlay);
-
-        // Panel principal
         const panelW = totalW + 60;
-        const panelH = totalH + 120;
-        const panel  = this.scene.add.rectangle(cx, cy, panelW, panelH, 0x0d0d22, 0.96)
-            .setStrokeStyle(1, 0x5533aa)
-            .setScrollFactor(0).setDepth(200);
-        items.push(panel);
+        const panelH = totalH + 150;
+        const top    = cy - panelH / 2;
 
-        // Título
-        const slotLabel = this.editingSlot === 0 ? 'Slot 1' : 'Slot 2';
-        const title = this.scene.add.text(cx, cy - panelH / 2 + 24,
-            `Equipar en ${slotLabel}  (F para cerrar)`,
-            { fontSize: '16px', color: '#cc99ff', fontFamily: 'monospace', align: 'center' }
-        ).setOrigin(0.5).setScrollFactor(0).setDepth(201);
-        items.push(title);
+        const add = <T extends Phaser.GameObjects.GameObject>(o: T): T => {
+            (o as unknown as Phaser.GameObjects.Components.ScrollFactor).setScrollFactor(0);
+            this.items.push(o);
+            return o;
+        };
 
-        // Slots actuales
-        const slotY = cy - panelH / 2 + 50;
-        [0, 1].forEach(si => {
-            const sx  = cx - 50 + si * 100;
-            const sid = si === 0 ? this.system.slot0.id : this.system.slot1.id;
-            const vis = ELEMENT_VISUALS[sid];
+        // Fondo: clic fuera del panel cierra
+        const overlay = add(s.add.rectangle(cx, cy, W, H, 0x000000, 0.55).setDepth(DEPTH));
+        overlay.setInteractive();
+        overlay.on('pointerdown', () => this.close());
+
+        // Panel (interactivo para que el clic no atraviese hacia el fondo)
+        const panel = add(s.add.rectangle(cx, cy, panelW, panelH, 0x0d0d22, 0.97)
+            .setStrokeStyle(1, 0x5533aa).setDepth(DEPTH + 1));
+        panel.setInteractive();
+
+        add(s.add.text(cx, top + 22, 'CAMBIAR ELEMENTOS', {
+            fontSize: '16px', color: '#cc99ff', fontFamily: 'monospace',
+        }).setOrigin(0.5).setDepth(DEPTH + 2));
+
+        // ── Pestañas de slot ──────────────────────────────────
+        const tabY = top + 56;
+        ([0, 1] as const).forEach(si => {
+            const sx     = cx - 62 + si * 124;
+            const slot   = si === 0 ? this.system.slot0 : this.system.slot1;
+            const vis    = ELEMENT_VISUALS[slot.id];
             const active = si === this.editingSlot;
 
-            const bg = this.scene.add.rectangle(sx, slotY, 80, 30,
-                active ? 0x3311aa : 0x1a1a33
-            ).setStrokeStyle(active ? 2 : 1, active ? 0xaa88ff : 0x444466)
-             .setScrollFactor(0).setDepth(201);
+            const tab = add(s.add.rectangle(sx, tabY, 116, 36, active ? 0x3311aa : 0x1a1a33)
+                .setStrokeStyle(active ? 2 : 1, active ? 0xaa88ff : 0x444466)
+                .setDepth(DEPTH + 2));
 
-            const txt = this.scene.add.text(sx, slotY, `${vis.icon} ${vis.label}`,
-                { fontSize: '12px', color: active ? '#ffffff' : '#888899', fontFamily: 'monospace' }
-            ).setOrigin(0.5).setScrollFactor(0).setDepth(202);
+            add(s.add.text(sx, tabY - 8, `SLOT ${si + 1}`, {
+                fontSize: '10px', color: active ? '#ddccff' : '#666688', fontFamily: 'monospace',
+            }).setOrigin(0.5).setDepth(DEPTH + 3));
 
-            items.push(bg, txt);
+            add(s.add.text(sx, tabY + 8, `${vis.icon} ${vis.label}`, {
+                fontSize: '12px', color: active ? '#ffffff' : '#888899', fontFamily: 'monospace',
+            }).setOrigin(0.5).setDepth(DEPTH + 3));
+
+            tab.setInteractive({ useHandCursor: true });
+            tab.on('pointerdown', () => {
+                this.editingSlot = si;
+                this.system.selectSlot(si);
+                this.rebuild();
+            });
         });
 
-        // Tarjetas de elementos
+        // ── Tarjetas de elementos ─────────────────────────────
         const startX = cx - totalW / 2 + cardW / 2;
-        const startY = cy - totalH / 2 + cardH / 2 + 30;
+        const startY = tabY + 40 + cardH / 2;
+        const editingId = this.editingSlot === 0 ? this.system.slot0.id : this.system.slot1.id;
+        const otherId   = this.editingSlot === 0 ? this.system.slot1.id : this.system.slot0.id;
 
         elements.forEach((eid, idx) => {
-            const col = idx % cols;
-            const row = Math.floor(idx / cols);
-            const ex  = startX + col * (cardW + gap);
-            const ey  = startY + row * (cardH + gap);
+            const ex = startX + (idx % cols) * (cardW + gap);
+            const ey = startY + Math.floor(idx / cols) * (cardH + gap);
 
-            const vis        = ELEMENT_VISUALS[eid];
-            const isEquipped = this.system.slot0.id === eid || this.system.slot1.id === eid;
-            const isActive   = this.editingSlot === 0
-                ? this.system.slot0.id === eid
-                : this.system.slot1.id === eid;
+            const vis      = ELEMENT_VISUALS[eid];
+            const inThis   = eid === editingId;
+            const inOther  = eid === otherId;
+            const baseFill = inThis ? vis.color : 0x1a1230;
+            const baseA    = inThis ? 0.8 : 0.6;
 
-            const cardBg = this.scene.add.rectangle(ex, ey, cardW, cardH,
-                isActive   ? vis.color & 0xffffff : 0x1a1230
-            ).setAlpha(isActive ? 0.8 : 0.6)
-             .setStrokeStyle(2, isEquipped ? vis.color : 0x444455)
-             .setScrollFactor(0).setDepth(201);
+            const card = add(s.add.rectangle(ex, ey, cardW, cardH, baseFill, baseA)
+                .setStrokeStyle(2, inThis || inOther ? vis.color : 0x444455)
+                .setDepth(DEPTH + 2));
 
-            const iconTxt = this.scene.add.text(ex, ey - 16, vis.icon,
-                { fontSize: '28px' }
-            ).setOrigin(0.5).setScrollFactor(0).setDepth(202);
+            add(s.add.text(ex, ey - 16, vis.icon, { fontSize: '28px' })
+                .setOrigin(0.5).setDepth(DEPTH + 3));
 
-            const labelTxt = this.scene.add.text(ex, ey + 18, vis.label,
-                { fontSize: '13px', color: isActive ? '#ffffff' : '#aaaacc', fontFamily: 'monospace' }
-            ).setOrigin(0.5).setScrollFactor(0).setDepth(202);
+            add(s.add.text(ex, ey + 16, vis.label, {
+                fontSize: '13px', color: inThis ? '#ffffff' : '#aaaacc', fontFamily: 'monospace',
+            }).setOrigin(0.5).setDepth(DEPTH + 3));
 
-            const hint = this.scene.add.text(ex, ey + 34, isActive ? '✓ Equipado' : (isEquipped ? '⊙ Otro slot' : ''),
-                { fontSize: '10px', color: isActive ? '#aaff88' : '#aaaaaa', fontFamily: 'monospace' }
-            ).setOrigin(0.5).setScrollFactor(0).setDepth(202);
+            const hint = inThis ? '✓ En este slot' : inOther ? '⇄ Intercambiar' : '';
+            add(s.add.text(ex, ey + 33, hint, {
+                fontSize: '10px', color: inThis ? '#aaff88' : '#ffcc66', fontFamily: 'monospace',
+            }).setOrigin(0.5).setDepth(DEPTH + 3));
 
-            // Interactividad
-            cardBg.setInteractive({ useHandCursor: true });
-            cardBg.on('pointerover', () => {
-                cardBg.setFillStyle((vis.color & 0xffffff) | 0x111100);
-                cardBg.setAlpha(0.85);
-            });
-            cardBg.on('pointerout',  () => {
-                cardBg.setFillStyle(isActive ? vis.color & 0xffffff : 0x1a1230);
-                cardBg.setAlpha(isActive ? 0.8 : 0.6);
-            });
-            cardBg.on('pointerdown', () => this.selectElement(eid));
-
-            items.push(cardBg, iconTxt, labelTxt, hint);
+            card.setInteractive({ useHandCursor: true });
+            card.on('pointerover', () => card.setFillStyle(vis.color, 0.9));
+            card.on('pointerout',  () => card.setFillStyle(baseFill, baseA));
+            card.on('pointerdown', () => this.selectElement(eid));
         });
 
-        // Hints de teclado (1-4)
-        const keyHint = this.scene.add.text(cx, cy + panelH / 2 - 20,
-            'Haz clic en un elemento para equiparlo',
-            { fontSize: '12px', color: '#666688', fontFamily: 'monospace' }
-        ).setOrigin(0.5).setScrollFactor(0).setDepth(201);
-        items.push(keyHint);
-
-        this.container = this.scene.add.container(0, 0, items)
-            .setScrollFactor(0).setDepth(199);
+        add(s.add.text(cx, top + panelH - 18,
+            'Clic: equipar   1/2: elegir slot   F: cerrar', {
+                fontSize: '11px', color: '#666688', fontFamily: 'monospace',
+            }).setOrigin(0.5).setDepth(DEPTH + 2));
     }
 
     private selectElement(id: ElementId): void {
-        this.system.selectSlot(this.editingSlot);
-        this.system.equipElement(id);
+        this.system.equipElement(id, this.editingSlot);
         this.close();
-        this.build(); // re-renderizar brevemente para confirmar
-        this.scene.time.delayedCall(300, () => this.close());
     }
 
     destroy(): void {

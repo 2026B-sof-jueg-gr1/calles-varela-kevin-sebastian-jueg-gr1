@@ -166,7 +166,7 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
         const offsets: [number, number][] = [
             [0, 8],     // cape
             [0, 4],     // body
-            [0, -20],    // hood
+            [13, -5],    // hood
             [-5 * dir, -18],    // eyeL
             [5 * dir, -18],    // eyeR
             [-14 * dir, 4],    // eSword
@@ -247,6 +247,8 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
     }
 
     stopHorizontal(): void {
+        // No cancelar el empuje recibido al ser golpeado
+        if (this._state === 'hurt') return;
         (this.body as Phaser.Physics.Arcade.Body).setVelocityX(0);
         if (this._onGround && this._state === 'run') {
             this._state = 'idle';
@@ -382,6 +384,11 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
         });
 
         if (this._health <= 0) this.die();
+    }
+
+    /** Concede invulnerabilidad temporal (p. ej. tras absorber un golpe con el escudo) */
+    grantInvulnerability(ms: number): void {
+        this.invulUntil = Math.max(this.invulUntil, this.scene.time.now + ms);
     }
 
     heal(amount: number): void {

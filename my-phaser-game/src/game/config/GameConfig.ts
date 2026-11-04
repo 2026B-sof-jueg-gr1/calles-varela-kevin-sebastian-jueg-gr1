@@ -103,6 +103,18 @@ export const GAME_CONFIG = {
             DAMAGE:            12,
             ATTACK_RANGE:      50,
             DETECT_RANGE:     320,
+            // ── Fase 3: combate del enemigo básico ──
+            SIZE:              34,    // lado del cuadrado (px)
+            COLOR:       0xff5500,    // naranja intenso, contrasta con el fondo
+            WINDUP:           450,    // ms de aviso antes de golpear (amarillo + "!")
+            ATTACK_ACTIVE:    140,    // ms que el golpe es peligroso
+            RECOVER:          700,    // ms de recuperación (vulnerable)
+            LUNGE:            170,    // impulso hacia delante al golpear
+            HIT_STUN:         200,    // ms sin IA tras recibir un golpe (deja actuar al knockback)
+            INTERRUPT_STUN:   450,    // ms aturdido si un golpe interrumpe su ataque
+            PLAYER_KNOCKBACK_X: 300,  // empuje al jugador
+            PLAYER_KNOCKBACK_Y: -220,
+            VULNERABLE_MULT:  1.3,    // multiplicador de daño recibido en recuperación/aturdido
             ATTACK_COOLDOWN: 1200,
             KNOCKBACK_RESIST:   0,
         },

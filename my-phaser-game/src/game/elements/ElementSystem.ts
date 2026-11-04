@@ -55,6 +55,9 @@ export class ElementSystem {
     // Índice del slot activo (0 o 1)
     private activeSlotIndex: 0 | 1 = 0;
 
+    // Cooldowns de elementos desequipados (para que no se recarguen al cambiar)
+    private elementCooldowns = new Map<ElementId, number>();
+
     // Todos los 4 elementos disponibles
     private readonly ALL_ELEMENTS: ElementId[] = ['earth', 'air', 'water', 'fire'];
 
@@ -63,6 +66,7 @@ export class ElementSystem {
     private waterShieldActive = false;
     private waterShieldUntil = 0;
     private waterHealAccum = 0;
+    private waterHealedTotal = 0;   // curación total entregada por este escudo
     private waterDamageAbsorbed = false;
 
     // Efectos de burn en curso: Map<gameObjectId -> burnUntil>
@@ -125,31 +129,35 @@ export class ElementSystem {
     }
 
     /**
-     * Equipa un elemento en el slot activo.
-     * - No permite equipar el mismo elemento dos veces.
-     * - No reinicia el cooldown del slot desplazado al otro slot.
+     * Equipa un elemento en un slot (por defecto el activo).
+     * - Si el elemento ya está en el otro slot, los dos slots se INTERCAMBIAN
+     *   (nunca hay dos iguales ni se queda un slot vacío).
+     * - El cooldown pertenece al ELEMENTO, no al slot: quitarlo y volver a
+     *   equiparlo no recarga la habilidad.
+     * - Las habilidades ya activas (escudo de agua, quemaduras) siguen
+     *   resolviéndose aunque el elemento se desequipe.
      */
-    equipElement(id: ElementId): void {
+    equipElement(id: ElementId, slotIndex: 0 | 1 = this.activeSlotIndex): void {
         if (id === 'none') return;
 
-        // Comprobar que no esté ya equipado en el otro slot
-        const otherIndex: 0 | 1 = this.activeSlotIndex === 0 ? 1 : 0;
-        if (this.slots[otherIndex].id === id) {
-            // Mover el activo al otro y poner el nuevo en el activo
-            // (swap: desalojar el conflicto cambiando el otro slot)
-            this.slots[otherIndex] = { id: 'none', cooldownUntil: 0 };
-        }
+        const target = this.slots[slotIndex];
+        if (target.id === id) return; // ya está ahí
 
-        // Si cambiamos el elemento del slot, el cooldown NO se resetea si es el mismo elemento
-        // (el cooldown del nuevo elemento empieza desde 0)
-        const prevId = this.slots[this.activeSlotIndex].id;
-        if (prevId !== id) {
-            this.slots[this.activeSlotIndex] = { id, cooldownUntil: 0 };
-        }
+        const otherIndex: 0 | 1 = slotIndex === 0 ? 1 : 0;
+        const other = this.slots[otherIndex];
 
-        // Si quitamos Aire, notificar
-        if (prevId === 'air' && !this.airEquipped) {
-            this.callbacks.onWaterShield(false); // solo para limpiar si estaba activo
+        // Guardar el cooldown del elemento que sale del slot
+        if (target.id !== 'none') this.elementCooldowns.set(target.id, target.cooldownUntil);
+
+        if (other.id === id) {
+            // Intercambio: cada elemento conserva su propio cooldown
+            this.slots[otherIndex] = target;
+            this.slots[slotIndex] = other;
+        } else {
+            this.slots[slotIndex] = {
+                id,
+                cooldownUntil: this.elementCooldowns.get(id) ?? 0,
+            };
         }
     }
 
@@ -231,6 +239,7 @@ export class ElementSystem {
         this.waterShieldActive = true;
         this.waterDamageAbsorbed = false;
         this.waterHealAccum = 0;
+        this.waterHealedTotal = 0;
         this.waterShieldUntil = this.scene.time.now + cfg.SHIELD_DURATION;
 
         // Visual del escudo
@@ -278,8 +287,8 @@ export class ElementSystem {
         ring.setDepth(20);
         this.scene.tweens.add({
             targets: ring,
-            scaleX: { from: 0.5, to: cfg.RADIUS / 10 * 2 },
-            scaleY: { from: 0.5, to: cfg.RADIUS / 10 * 2 },
+            scaleX: { from: 0.5, to: cfg.RADIUS / 10 },
+            scaleY: { from: 0.5, to: cfg.RADIUS / 10 },
             alpha: { from: 0.8, to: 0 },
             duration: 450,
             ease: 'Power2',
@@ -374,7 +383,10 @@ export class ElementSystem {
 
     /** Curación acumulada (se llama desde fuera para aplicar al jugador) */
     drainHealAccum(): number {
-        const amount = Math.floor(this.waterHealAccum);
+        // Tope de curación total por escudo (MAX_HEAL)
+        const room   = Math.max(0, GAME_CONFIG.ELEMENTS.WATER.MAX_HEAL - this.waterHealedTotal);
+        const amount = Math.min(Math.floor(this.waterHealAccum), room);
+        this.waterHealedTotal += amount;
         this.waterHealAccum -= amount;
         return amount;
     }
