@@ -21,7 +21,7 @@ export class Preloader extends Scene {
         bg.fillRect(0, 0, W, H);
 
         // Título
-        this.add.text(W / 2, H / 2 - 80, 'UMBRA', {
+        this.add.text(W / 2, H / 2 - 80, 'BEDER', {
             fontSize: '48px',
             color: '#9944ff',
             fontFamily: 'Georgia, serif',
