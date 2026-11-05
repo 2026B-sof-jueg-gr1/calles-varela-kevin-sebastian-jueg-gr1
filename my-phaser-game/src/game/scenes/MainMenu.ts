@@ -46,7 +46,7 @@ export class MainMenu extends Scene {
         });
 
         // ── Título ────────────────────────────────────────────
-        const title = this.add.text(W / 2, 180, 'UMBRA', {
+        const title = this.add.text(W / 2, 180, 'BEDER', {
             fontSize: '88px',
             color: '#cc88ff',
             fontFamily: 'Georgia, serif',
